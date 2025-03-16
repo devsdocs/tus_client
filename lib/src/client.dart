@@ -3,12 +3,12 @@ import 'dart:developer';
 import 'dart:io';
 import 'dart:math' show min;
 import 'dart:typed_data' show Uint8List, BytesBuilder;
+import 'package:dio/dio.dart';
 import 'package:speed_test_dart/speed_test_dart.dart';
 import 'package:tus_client_dart/src/retry_scale.dart';
 import 'package:tus_client_dart/src/tus_client_base.dart';
 
 import 'exceptions.dart';
-import 'package:http/http.dart' as http;
 
 /// This class is used for creating or resuming uploads.
 class TusClient extends TusClientBase {
@@ -24,7 +24,7 @@ class TusClient extends TusClientBase {
   }
 
   /// Override this method to use a custom Client
-  http.Client getHttpClient() => http.Client();
+  Dio getClient() => Dio();
 
   int _actualRetry = 0;
 
@@ -33,7 +33,7 @@ class TusClient extends TusClientBase {
     try {
       _fileSize = await file.length();
 
-      final client = getHttpClient();
+      final client = getClient();
       final createHeaders = Map<String, String>.from(headers ?? {})
         ..addAll({
           "Tus-Resumable": tusVersion,
@@ -47,15 +47,16 @@ class TusClient extends TusClientBase {
         throw ProtocolException('Error in request, URL is incorrect');
       }
 
-      final response = await client.post(_url, headers: createHeaders);
+      final response =
+          await client.postUri(_url, options: Options(headers: createHeaders));
 
-      if (!(response.statusCode >= 200 && response.statusCode < 300) &&
+      if (!(response.statusCode! >= 200 && response.statusCode! < 300) &&
           response.statusCode != 404) {
         throw ProtocolException(
             "Unexpected Error while creating upload", response.statusCode);
       }
 
-      String urlStr = response.headers["location"] ?? "";
+      String urlStr = response.headers.value("location") ?? "";
       if (urlStr.isEmpty) {
         throw ProtocolException(
             "missing upload Uri in response for creating upload");
@@ -156,7 +157,7 @@ class TusClient extends TusClientBase {
     final uploadStopwatch = Stopwatch()..start();
 
     // start upload
-    final client = getHttpClient();
+    final client = getClient();
 
     if (onStart != null) {
       Duration? estimate;
@@ -197,18 +198,21 @@ class TusClient extends TusClientBase {
     Function(double, Duration)? onProgress,
     Function()? onComplete,
     required Map<String, String> uploadHeaders,
-    required http.Client client,
+    required Dio client,
     required Stopwatch uploadStopwatch,
     required int totalBytes,
   }) async {
     try {
-      final request = http.Request("PATCH", _uploadUrl as Uri)
-        ..headers.addAll(uploadHeaders)
-        ..bodyBytes = await _getData();
-      _response = await client.send(request);
+      _response = await client.patchUri(_uploadUrl as Uri,
+          data: await _getData(),
+          options: Options(
+            headers: uploadHeaders,
+            responseType: ResponseType.stream,
+          ));
+      ;
 
       if (_response != null) {
-        _response?.stream.listen(
+        (_response!.data.stream as Stream<Uint8List>).listen(
           (newBytes) {
             if (_actualRetry != 0) _actualRetry = 0;
           },
@@ -243,14 +247,15 @@ class TusClient extends TusClientBase {
         );
 
         // check if correctly uploaded
-        if (!(_response!.statusCode >= 200 && _response!.statusCode < 300)) {
+        if (!(_response!.statusCode! >= 200 && _response!.statusCode! < 300)) {
           throw ProtocolException(
             "Error while uploading file",
             _response!.statusCode,
           );
         }
 
-        int? serverOffset = _parseOffset(_response!.headers["upload-offset"]);
+        int? serverOffset =
+            _parseOffset(_response!.headers.value("upload-offset"));
         if (serverOffset == null) {
           throw ProtocolException(
               "Response to PATCH request contains no or invalid Upload-Offset header");
@@ -293,7 +298,8 @@ class TusClient extends TusClientBase {
   Future<bool> pauseUpload() async {
     try {
       _pauseUpload = true;
-      await _response?.stream.timeout(Duration.zero);
+      await (_response?.data.stream as Stream<Uint8List>)
+          .timeout(Duration.zero);
       return true;
     } catch (e) {
       throw Exception("Error pausing upload");
@@ -328,23 +334,23 @@ class TusClient extends TusClientBase {
 
   /// Get offset from server throwing [ProtocolException] on error
   Future<int> _getOffset() async {
-    final client = getHttpClient();
+    final client = getClient();
 
     final offsetHeaders = Map<String, String>.from(headers ?? {})
       ..addAll({
         "Tus-Resumable": tusVersion,
       });
-    final response =
-        await client.head(_uploadUrl as Uri, headers: offsetHeaders);
+    final response = await client.headUri(_uploadUrl as Uri,
+        options: Options(headers: offsetHeaders));
 
-    if (!(response.statusCode >= 200 && response.statusCode < 300)) {
+    if (!(response.statusCode! >= 200 && response.statusCode! < 300)) {
       throw ProtocolException(
         "Unexpected error while resuming upload",
         response.statusCode,
       );
     }
 
-    int? serverOffset = _parseOffset(response.headers["upload-offset"]);
+    int? serverOffset = _parseOffset(response.headers.value("upload-offset"));
     if (serverOffset == null) {
       throw ProtocolException(
           "missing upload offset in response for resuming upload");
@@ -394,7 +400,7 @@ class TusClient extends TusClientBase {
     return uploadUrl;
   }
 
-  http.StreamedResponse? _response;
+  Response? _response;
 
   int? _fileSize;
 

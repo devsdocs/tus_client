@@ -26,7 +26,7 @@ class MockTusClient extends TusClient {
     httpClient = MockClient();
   }
 
-  http.Client getHttpClient() => httpClient as http.Client;
+  // http.Client getClient() => httpClient as http.Client;
 }
 
 @GenerateMocks([http.Client])
